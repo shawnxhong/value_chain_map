@@ -4,23 +4,94 @@
 
 ## LLM layer (`backend/vcm/llm/`)
 
-Anthropic SDK (`anthropic`), structured output via Pydantic. Auth resolves from env or an `ant` profile — `Anthropic()` zero-arg picks up `ANTHROPIC_API_KEY` or an `ant auth login` profile. **Never hardcode keys.** Model ids come from `config.py` (`EXTRACT_MODEL="claude-sonnet-4-6"`, `VERIFY_MODEL="claude-opus-4-8"`).
+**Provider-pluggable.** Extraction and verification each run on a configurable provider —
+**Anthropic (default), OpenAI, or DeepSeek** — behind one stable interface, so the deterministic
+pipeline (§9.1 below) and all callers stay provider-agnostic. Auth resolves per provider from the
+environment at call time (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`); **never
+hardcode keys.** Provider + model ids come from `config.py`.
 
-### Extraction — `claude-sonnet-4-6`
-- Call: `client.messages.parse(model=EXTRACT_MODEL, output_format=CandidateEdgeList, ...)` (Pydantic) or equivalently `output_config={"format": {"type": "json_schema", "schema": ...}}`.
-- Input: one chunk + stable schema/instructions.
-- Output: candidate edges, each with `relationship_type`, `layer`, inline `excerpt`, `confidence_label`, `confidence_reason`, `economic_direction` (SUPPLIES_TO only), `as_of_date`.
-- Enforces design §9.2 prohibitions in the prompt: no `fact` edge without an excerpt; never rewrite "likely / may / could" into a certain relationship; never invent a named customer from a guess.
+### Provider abstraction
 
-### Verification — `claude-opus-4-8`
-- Call: `thinking={"type": "adaptive"}` + `output_config={"effort": "high"}`, structured `EdgeVerdict` output.
-- For each candidate edge, checks the claim against its own excerpt and returns `supported`, the `correct_layer`, the `correct_confidence_label`, and a `reason`. Can downgrade layer/label or reject. This is the quality gate before anything reaches staging.
-- Adaptive thinking + structured output are compatible.
+```
+vcm/llm/
+  base.py            # Provider protocol, ParseRequest[T], neutral LLMUsage
+  registry.py        # get_provider(Provider) -> impl, cached
+  providers/
+    anthropic.py     # messages.parse + cache_control + thinking + effort
+    openai_compat.py # OpenAI AND DeepSeek (OpenAI SDK; base_url + structured_mode differ)
+  calls.py           # extract_edges / verify_edge — provider-neutral; selects from config
+  errors.py          # LLMError hierarchy; maps anthropic.* and openai.*
+```
+
+- **`Provider` protocol** — `parse_structured(req: ParseRequest[T]) -> LLMResult[T]`.
+- **`ParseRequest[T]`** — `model`, `output_format` (Pydantic), `system`, `cached_prefix` (stable:
+  instructions + chunk), `question` (varying), `max_tokens`, `reasoning: bool`, `effort`.
+- **`LLMResult[T]`** — `parsed`, `usage: LLMUsage`, `provider`, `model`, `request_id`, `finish_reason`.
+- **`LLMUsage`** — neutral `input_tokens` / `output_tokens` / `cached_input_tokens`; each provider's
+  native usage is normalized into it (so the caching check is provider-agnostic).
+- The **public API is unchanged** — `extract_edges`, `verify_edge`, `LLMResult`, the `LLMError`
+  hierarchy. Only the internals fan out to providers.
+
+### Selection (config-driven, per role)
+
+```yaml
+extract_provider: anthropic            # default; or openai | deepseek
+extract_model:    claude-sonnet-4-6
+verify_provider:  anthropic            # default
+verify_model:     claude-opus-4-8
+deepseek_base_url: https://api.deepseek.com
+```
+Per-role selection means extract and verify can run on different providers (e.g. extract on
+DeepSeek, verify on Anthropic). Keys stay out of config — resolved from env per provider.
+
+### Roles (provider-neutral)
+
+- **Extraction** — one chunk + stable schema/instructions → `CandidateEdgeList`: candidate edges
+  with `relationship_type`, `layer`, inline `excerpt`, `confidence_label`, `confidence_reason`,
+  `economic_direction` (SUPPLIES_TO only), `as_of_date`. The prompt enforces the design §9.2
+  prohibitions: no `fact` edge without an excerpt; never rewrite "likely / may / could" into a
+  certain relationship; never invent a named customer from a guess.
+- **Verification** — for each candidate, checks the claim against its own excerpt and returns
+  `EdgeVerdict` (`supported`, `correct_layer`, `correct_confidence_label`, `reason`); can downgrade
+  layer/label or reject. The quality gate before anything reaches staging. Runs with reasoning +
+  `effort=high` where the provider supports it.
+
+### Per-provider capability matrix
+
+| Provider | Structured output | Reasoning / effort | Prompt caching | `cached_input_tokens` from | Exceptions |
+|---|---|---|---|---|---|
+| **Anthropic** (default) | `messages.parse(output_format=…)` | `thinking` adaptive + `output_config.effort` | **explicit** `cache_control` on the prefix | `usage.cache_read_input_tokens` | `anthropic.*` |
+| **OpenAI** | `chat.completions.parse(response_format=…)` (json_schema, strict) | `reasoning_effort` (o-series / gpt-5) | **automatic** (prefix ≥ ~1024 tok) | `usage.prompt_tokens_details.cached_tokens` | `openai.*` |
+| **DeepSeek** | `chat.completions.create(response_format={"type":"json_object"})` + schema in prompt + `model_validate_json` | optional via `deepseek-reasoner` | **automatic** (context caching) | `usage.prompt_cache_hit_tokens` | `openai.*` (same SDK + `base_url`) |
+
+- **Message shape is already cross-provider-friendly**: stable content first (system +
+  instructions + chunk), varying question last. Anthropic marks the breakpoint with `cache_control`;
+  OpenAI/DeepSeek auto-cache the same prefix with no marker.
+- **DeepSeek has no strict `json_schema`** → JSON-mode + client-side Pydantic validation; a validation
+  failure maps to `LLMRefusalError` (optionally one re-ask). Default model `deepseek-chat`;
+  `deepseek-reasoner` is optional and its JSON-mode support is the caveat.
+- **OpenAI and DeepSeek share one provider class** (the `openai` SDK), differing only by `base_url`,
+  key env var, and `structured_mode ∈ {json_schema, json_object}`.
+- **Refusals** map uniformly to `LLMRefusalError`: Anthropic `stop_reason='refusal'`, OpenAI
+  `message.refusal` / `parsed is None`, DeepSeek JSON-validate failure.
 
 ### Cost & resilience
-- **Prompt caching**: cache the chunk + stable instruction prefix as the cached prefix; vary the per-edge question. Both prompts re-read the same chunk, so the chunk is cached once and read by extraction and verification. Verify `usage.cache_read_input_tokens > 0` in a smoke test.
-- **Batches API** (Phase 1, 50% cost): bulk extraction across many chunks is latency-tolerant — submit as a batch, key results by `custom_id`, never by position.
-- **Retries / errors**: SDK auto-retries 429/5xx; wrap calls with a most-specific-first typed-exception chain. Stream when `max_tokens` is large.
+- **Prompt caching**: keep the chunk + stable instructions as the leading prefix and vary the
+  per-edge question. Anthropic caches it via an explicit `cache_control` breakpoint; OpenAI and
+  DeepSeek auto-cache the prefix. The smoke test asserts the normalized `cached_input_tokens > 0` on a
+  same-provider, same-prefix second call. (Caches are model-scoped, so extraction and verification do
+  not share one.)
+- **Batches API** (Phase 1, 50% cost): bulk extraction is latency-tolerant — submit as a batch, key
+  results by `custom_id`, never by position. Anthropic and OpenAI both expose batch APIs; DeepSeek
+  does not (fall back to bounded concurrency).
+- **Retries / errors**: each SDK auto-retries 429/5xx; calls are wrapped in a most-specific-first
+  typed-exception chain that maps `anthropic.*` and `openai.*` into the shared `LLMError` hierarchy.
+  Stream when `max_tokens` is large.
+
+> **Dependency / status**: adds `openai>=1.x` to core deps (DeepSeek reuses it; `anthropic` stays).
+> The provider split is a planned refactor of the Phase-0 Anthropic-only wrapper — implement it behind
+> the unchanged public API, and verify the exact OpenAI-SDK method and usage-field names against the
+> installed version first (as was done for the Anthropic SDK).
 
 ---
 

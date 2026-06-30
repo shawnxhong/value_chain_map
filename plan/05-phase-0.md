@@ -8,7 +8,7 @@
 
 1. **Scaffold** the monorepo: `backend/pyproject.toml`, `frontend/` (Vite + React + TS), `infra/docker-compose.yml` (postgres+pgvector, backend, frontend), `infra/.env.example`, `backend/vcm/config.py` settings loader.
 2. **Migration `0001_init`** (Alembic): `nodes, companies, edges, evidence, edge_evidence, documents, chunks, audit_log`. Pydantic contracts in `backend/vcm/models/` (`CandidateEdge`, `EdgeVerdict`, `Edge`, `Evidence`, `Node`, `Company`).
-3. **`llm/` wrapper**: Anthropic client, structured output, prompt caching, retry, model ids from config. Smoke test one Sonnet call and one Opus call.
+3. **`llm/` wrapper**: provider-pluggable (Anthropic default; OpenAI/DeepSeek selectable per role), structured output, prompt caching, retry, provider + model ids from config. Smoke test one extract call and one verify call on the configured provider(s).
 4. **Ingestion**: manual PDF/text upload + one SEC EDGAR 10-K fetch. Docling/Unstructured parse -> chunks (persist `documents`, `chunks`).
 5. **Extraction + verification**: extraction prompt + `CandidateEdge` schema (Sonnet); verification prompt + `EdgeVerdict` (Opus, adaptive thinking). Wire `POST /api/pipeline/run`.
 6. **Resolution v0 + evidence binding**: exact ticker/alias resolution; bind excerpts; write edges `status=candidate`. Enforce: a `fact` edge with no `edge_evidence` row is rejected at write time.
@@ -25,6 +25,6 @@ From a clean `docker compose up`:
 - click that edge in the graph and read its source excerpt.
 
 Constraints that must hold:
-- extraction uses `claude-sonnet-4-6`, verification uses `claude-opus-4-8`, both via structured output;
+- extraction and verification run on the configured provider + model (default `claude-sonnet-4-6` / `claude-opus-4-8`), both via structured output;
 - no `fact` edge exists without a bound excerpt (assert this in a test);
 - `source_rank` / `directness_rank` are stored as separate ordinals, with no combined score anywhere.

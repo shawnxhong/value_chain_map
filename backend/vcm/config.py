@@ -15,6 +15,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from vcm.models.enums import LLMProvider
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -27,12 +29,25 @@ class Settings(BaseSettings):
     # --- database ---
     database_url: str = "postgresql+psycopg://vcm:vcm@localhost:5432/vcm"
 
-    # --- LLM (ids only; auth via ANTHROPIC_API_KEY / ant profile) ---
+    # --- LLM (provider + model ids only; auth via per-provider env keys) ---
+    # Anthropic is the default; OpenAI/DeepSeek are opt-in per role (plan/02 §LLM layer).
+    # Keys resolve from env at call time: ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY.
+    extract_provider: LLMProvider = LLMProvider.anthropic
     extract_model: str = "claude-sonnet-4-6"
+    verify_provider: LLMProvider = LLMProvider.anthropic
     verify_model: str = "claude-opus-4-8"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    # SDK auto-retries 429/5xx/connection errors with exponential backoff (plan/02).
+    llm_max_retries: int = 2
 
     # --- object storage (raw source documents) ---
     storage_dir: str = "./data/objects"
+
+    # --- ingestion / parsing ---
+    # SEC requires a descriptive User-Agent with contact info on EDGAR requests.
+    edgar_user_agent: str = "vcm-research vcm@example.com"
+    # Target chunk size in characters (~4 chars/token => ~1.5k tokens) for LLM extraction.
+    chunk_target_chars: int = 6000
 
     # --- analytics / freshness ---
     staleness_warn_months: int = 12

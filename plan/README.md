@@ -33,6 +33,7 @@ VCM is the **Layer-2 (industry structure & value chain) map engine** of a five-l
 | Decision | Choice | Rationale / source |
 |---|---|---|
 | LLM split | extraction = `claude-sonnet-4-6`; verification = `claude-opus-4-8` | Cost on the high-volume pass, quality on the correctness gate |
+| LLM provider | pluggable — Anthropic (default), OpenAI, DeepSeek; selectable per role | Multi-provider behind one interface (`02-pipeline-and-llm.md` §LLM layer); Anthropic default preserves current behavior |
 | UI | interactive React + Cytoscape from Phase 0 | Design §15; the map is a core deliverable |
 | Plan depth | Phase 0 & 1 fully specified; Phase 2–3 outlined | MVP is where execution detail matters |
 | Storage | relational-first: PostgreSQL (edges as rows) + NetworkX (in-memory) | Design §12; 50–500 edges don't need a graph DB |
@@ -52,7 +53,7 @@ value_chain_map/
   plan/            # this plan
   backend/
     vcm/
-      config.py            # pydantic-settings: DB URL, model ids, ANTHROPIC auth, thresholds
+      config.py            # pydantic-settings: DB URL, provider + model ids, thresholds (provider auth via env)
       db/                  # SQLAlchemy models, Alembic migrations, session factory
       models/              # Pydantic domain models + LLM I/O schemas (the contracts)
       ingestion/           # source manager: manual upload + SEC EDGAR (10-K/XBRL) fetch
@@ -98,7 +99,7 @@ value_chain_map/
 
 ## Cross-cutting concerns
 
-- **Config / secrets**: `pydantic-settings`; `.env`; Anthropic auth via env var or `ant` profile — never hardcode keys. Model ids live in config (`EXTRACT_MODEL`, `VERIFY_MODEL`) so they are swappable without code edits.
+- **Config / secrets**: `pydantic-settings`; `.env`; **per-provider auth via env** — `ANTHROPIC_API_KEY` (or an `ant` profile), `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` — never hardcode keys. Provider + model ids live in config (`EXTRACT_PROVIDER`/`EXTRACT_MODEL`, `VERIFY_PROVIDER`/`VERIFY_MODEL`) so they are swappable without code edits (Anthropic is the default).
 - **Anti-fake-precision (enforced in code, not just docs)**: no API field or DB column ever stores a combined confidence number. `source_rank` and `directness_rank` are two independent ordinal sort keys. UI shows label + reason only (design §7.3, §14.3).
 - **Boundary enforcement (design §3 IN/OUT)**: financials are used only for **cross-stage comparison**; there are no per-company fundamental endpoints. A review checklist item guards against scope creep into Layers 3–5.
 - **Evidence is mandatory (design §5.1, §9.2)**: a `fact`-layer edge cannot be written without a bound excerpt; the LLM never writes `confirmed` directly (design §5.3).

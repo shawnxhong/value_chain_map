@@ -157,3 +157,12 @@ class FinancialMetric(StrEnum):
     op_margin = "op_margin"
     roic = "roic"
     fcf_margin = "fcf_margin"
+
+
+# --- LLM provider selection (plan/02 §LLM layer) ------------------------------ #
+
+
+class LLMProvider(StrEnum):
+    anthropic = "anthropic"
+    openai = "openai"
+    deepseek = "deepseek"

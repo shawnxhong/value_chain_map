@@ -1,7 +1,7 @@
 """FastAPI application factory (plan/04-api-and-frontend.md).
 
-At the scaffold stage only the health router is mounted; domain routers
-(graph, evidence, cards, analytics, pipeline, review) land in later Phase 0/1 tasks.
+Mounts the health and pipeline (ingest) routers; the remaining domain routers
+(graph, evidence, cards, analytics, review) land in later Phase 0/1 tasks.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from vcm import __version__
 from vcm.api.health import router as health_router
+from vcm.api.pipeline import router as pipeline_router
 from vcm.config import get_settings
 
 
@@ -26,6 +27,7 @@ def create_app() -> FastAPI:
     )
     # All API routes are served under /api (the frontend dev server proxies /api).
     app.include_router(health_router, prefix="/api")
+    app.include_router(pipeline_router, prefix="/api")
     return app
 
 

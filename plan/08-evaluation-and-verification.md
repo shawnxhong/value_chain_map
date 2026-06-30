@@ -7,6 +7,7 @@
 - **Gold set**: 20–30 hand-labeled relationships for the HBM sub-chain in `seeds/gold_edges.yaml`, landing in Phase 1.
 - **Metrics** (`backend/vcm/eval/`): precision, recall, faithfulness (is the extracted relationship supported by its excerpt?), entity-resolution accuracy, layer-correctness (fact/estimate/inference/thesis assigned right), temporal-correctness.
 - **Gate**: the eval runs on **every prompt change** — without it there's no way to tell if extraction is improving or regressing. Run via `python -m vcm.eval`.
+- **Cross-provider comparison**: the same gold-set eval can be run per provider (Anthropic / OpenAI / DeepSeek) to compare precision / recall / faithfulness and pick the extract/verify provider per role. Edge provenance (`provider:model`, see `01-data-model.md`) ties each result back to who produced it.
 
 ## Confidence labels (de-formularized, sortable — design §14.3)
 
@@ -42,5 +43,5 @@ Every edge carries `as_of_date`. The UI shows "last verified N months ago" and g
 5. `python -m vcm.eval` prints precision/recall against `gold_edges.yaml`.
 
 ### LLM checks
-- Smoke test: the extraction call returns valid `CandidateEdge` JSON on `claude-sonnet-4-6`; the verify call returns `EdgeVerdict` on `claude-opus-4-8` with adaptive thinking.
-- Caching check: `usage.cache_read_input_tokens > 0` on a second call that shares a chunk prefix.
+- Smoke test: the extraction call returns a valid `CandidateEdgeList`; the verify call returns a valid `EdgeVerdict` — on the **configured provider + model** (default `claude-sonnet-4-6` / `claude-opus-4-8`; with reasoning where supported). Opt-in per provider via its key env var (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`).
+- Caching check: the normalized `cached_input_tokens > 0` on a same-provider, same-prefix second call (maps to `cache_read_input_tokens` / `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens` — see `02-pipeline-and-llm.md`).

@@ -66,6 +66,7 @@ created_at, updated_at
 **Guardrails (enforced in schema / code):**
 - `source_rank` and `directness_rank` are **two independent ordinal sort keys — never combined into a single score** (design §7.3 guardrail).
 - `economic_direction` is **required only for `SUPPLIES_TO`**. A CHECK constraint enforces `payer_node_id` / `receiver_node_id` present iff `relationship_type = 'SUPPLIES_TO'` (design §7.2, §16 decision 6).
+- **Provenance**: the LLM provider + model that produced (and verified) an edge is recorded in `notes` for cross-provider auditing — e.g. `extracted_by=openai:gpt-…; verified_by=anthropic:claude-opus-4-8`. A dedicated column is deferred until it's queried; this feeds the cross-provider eval in `08-evaluation-and-verification.md`.
 
 ### `evidence`  (design §7.4)
 ```
@@ -156,8 +157,8 @@ at          timestamptz
 
 One definition per concept, reused by both the API and the LLM structured-output calls:
 
-- **`CandidateEdge`** — LLM extraction output (one per candidate relationship). Fields mirror `edges` minus DB-managed ones, plus an inline `excerpt`. Used as the `output_format` for the Sonnet extraction call.
-- **`EdgeVerdict`** — LLM verification output: `supported: bool`, `correct_layer`, `correct_confidence_label`, `reason`. Used as the `output_format` for the Opus verify call.
+- **`CandidateEdge`** — LLM extraction output (one per candidate relationship). Fields mirror `edges` minus DB-managed ones, plus an inline `excerpt`. The structured-output schema for the extraction call (any provider — Anthropic/OpenAI native, DeepSeek via JSON-mode + validation; see `02-pipeline-and-llm.md`).
+- **`EdgeVerdict`** — LLM verification output: `supported: bool`, `correct_layer`, `correct_confidence_label`, `reason`. The structured-output schema for the verification call (any provider).
 - **`Edge`, `Evidence`, `Node`, `Company`** — domain models mirroring the tables.
 - **`StructuralProfileCard`** — the Layer-3/4/5 handoff contract (full shape in `03-analytics-and-cards.md`).
 
