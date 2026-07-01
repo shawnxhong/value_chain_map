@@ -2,10 +2,11 @@
 
 `POST /api/pipeline/ingest`       — manual upload of a transcript / deck / document.
 `POST /api/pipeline/ingest/edgar` — fetch + ingest the latest 10-K for a ticker/CIK.
-`POST /api/pipeline/run`          — extract + verify over a document's chunks.
+`POST /api/pipeline/run`          — extract + verify over a document's chunks, then persist the
+                                    verified edges to the staging graph (`status=candidate`).
 
-Ingest persists `documents` + `chunks`; run returns verified candidate edges (persisting
-them to the staging graph is Task 6: resolution + evidence binding).
+Ingest persists `documents` + `chunks`; run resolves endpoints to nodes, binds excerpts as
+evidence, and writes candidate edges (resolution + evidence binding, Task 6).
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ import uuid
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from vcm.db.models import Document
 from vcm.db.session import session_scope
+from vcm.graph import PersistResult, persist_verified_edges
 from vcm.ingestion.edgar import IngestionError
 from vcm.ingestion.service import IngestResult, ingest_edgar_10k, ingest_upload
 from vcm.models.enums import ConfidenceLabel, Layer, RelationshipType, SourceType
@@ -101,9 +104,12 @@ def ingest_edgar(body: EdgarIngestRequest) -> IngestResponse:
 class PipelineRunRequest(BaseModel):
     document_id: uuid.UUID
     max_chunks: int | None = None  # bound cost in Phase 0; None = all chunks
+    chain: str | None = None  # tag persisted nodes/edges with this sub-chain
+    persist: bool = True  # write verified edges to the staging graph (status=candidate)
 
 
 class VerifiedEdgeOut(BaseModel):
+    edge_id: uuid.UUID | None = None  # the persisted edge (None if not persisted / rejected)
     source: str
     target: str
     relationship_type: RelationshipType
@@ -120,18 +126,26 @@ class PipelineRunResponse(BaseModel):
     candidates_extracted: int
     candidates_verified: int
     candidates_unsupported: int
+    nodes_created: int
+    edges_written: int
     edges: list[VerifiedEdgeOut]
 
 
-def _run_response(document_id: uuid.UUID, result: PipelineResult) -> PipelineRunResponse:
+def _run_response(
+    document_id: uuid.UUID, result: PipelineResult, persist: PersistResult | None
+) -> PipelineRunResponse:
+    edge_ids = persist.edge_ids if persist is not None else [None] * len(result.verified)
     return PipelineRunResponse(
         document_id=document_id,
         chunks_processed=result.chunks_processed,
         candidates_extracted=result.extracted,
         candidates_verified=len(result.verified),
         candidates_unsupported=result.unsupported,
+        nodes_created=persist.nodes_created if persist is not None else 0,
+        edges_written=sum(1 for eid in edge_ids if eid is not None),
         edges=[
             VerifiedEdgeOut(
+                edge_id=edge_id,
                 source=v.candidate.source,
                 target=v.candidate.target,
                 relationship_type=v.candidate.relationship_type,
@@ -141,17 +155,24 @@ def _run_response(document_id: uuid.UUID, result: PipelineResult) -> PipelineRun
                 chunk_ordinal=v.chunk_ordinal,
                 verdict_reason=v.verdict.reason,
             )
-            for v in result.verified
+            for v, edge_id in zip(result.verified, edge_ids, strict=True)
         ],
     )
 
 
 @router.post("/run", response_model=PipelineRunResponse)
 def run(body: PipelineRunRequest) -> PipelineRunResponse:
-    """Run extract + verify over a document's chunks (uses the configured providers)."""
+    """Run extract + verify over a document's chunks, then persist the verified edges."""
     try:
-        with session_scope() as session:  # read-only in Task 5 (no graph writes yet)
+        with session_scope() as session:
             result = run_document(session, body.document_id, max_chunks=body.max_chunks)
+            persist: PersistResult | None = None
+            if body.persist:
+                document = session.get(Document, body.document_id)
+                assert document is not None  # run_document already validated existence
+                persist = persist_verified_edges(
+                    session, document, result.verified, chain=body.chain
+                )
     except PipelineError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    return _run_response(body.document_id, result)
+    return _run_response(body.document_id, result, persist)
