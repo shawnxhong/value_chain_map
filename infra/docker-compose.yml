@@ -20,10 +20,27 @@ services:
   backend:
     build:
       context: ../backend
+      # for device needs proxy
+      args:
+        HTTP_PROXY: http://172.17.0.1:7897/
+        HTTPS_PROXY: http://172.17.0.1:7897/
+        NO_PROXY: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+        http_proxy: http://172.17.0.1:7897/
+        https_proxy: http://172.17.0.1:7897/
+        no_proxy: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # for device needs proxy
     environment:
       VCM_DATABASE_URL: postgresql+psycopg://vcm:vcm@postgres:5432/vcm
-      # Passed through to the Anthropic SDK; leave blank in infra/.env to use an ant profile.
+      # LLM auth — keys live in infra/.env and are resolved by each provider SDK at call time.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # LLM provider/model selection. Defaults to Anthropic; override in infra/.env — e.g.
+      # VCM_EXTRACT_PROVIDER=deepseek when Anthropic is geo-blocked without a runtime proxy.
+      VCM_EXTRACT_PROVIDER: ${VCM_EXTRACT_PROVIDER:-anthropic}
+      VCM_EXTRACT_MODEL: ${VCM_EXTRACT_MODEL:-claude-sonnet-4-6}
+      VCM_VERIFY_PROVIDER: ${VCM_VERIFY_PROVIDER:-anthropic}
+      VCM_VERIFY_MODEL: ${VCM_VERIFY_MODEL:-claude-opus-4-8}
     ports:
       - "8000:8000"
     depends_on:
@@ -42,6 +59,15 @@ services:
   frontend:
     build:
       context: ../frontend
+      # for device needs proxy
+      args:
+        HTTP_PROXY: http://172.17.0.1:7897/
+        HTTPS_PROXY: http://172.17.0.1:7897/
+        NO_PROXY: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+        http_proxy: http://172.17.0.1:7897/
+        https_proxy: http://172.17.0.1:7897/
+        no_proxy: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+        # for device needs proxy
     environment:
       VITE_API_PROXY: http://backend:8000
     ports:

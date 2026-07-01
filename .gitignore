@@ -226,3 +226,6 @@ frontend/dist/
 /data/
 backend/data/
 conversation
+
+# Local deploy runtime (scripts/vcm.sh pids + logs)
+/.run/

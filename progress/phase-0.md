@@ -642,3 +642,65 @@ Tasks 1–8 done and verified; **Task 9 code complete, live DoD run pending the 
 (`RUNNING.md`). Once that run passes, Phase 0 is closed and work moves to `plan/06` (Phase 1:
 migration `0002` for `financials`/`profile_cards`, XBRL ingest, analytics + profile cards, the full
 view set, and the eval harness).
+
+---
+
+## Graph display module — layered value-chain layout ✅
+
+**Date**: 2026-07-01
+
+Post-Task-8 frontend optimization. The first seed run rendered as a force-directed "hairball"
+(Cytoscape `cose`): every node collapsed toward the NVIDIA hub, tiny node-dots had free-floating
+labels that overlapped into an unreadable mass, and every edge printed its relationship type on
+top — no sense of upstream vs downstream. Replaced it with a **semantic layered layout**. Design
+recorded in `plan/04-api-and-frontend.md` §"Layout / display module". **Frontend-only — no
+backend/API change** (the graph API already returns `node_type` + `relationship_type`).
+
+### What was built
+
+- **`frontend/src/graph/layout.ts`** (new, pure) — the VCM-specific logic:
+  - `FLOW_RELATIONSHIPS = {SUPPLIES_TO, SERVES_MARKET, PRODUCES, BELONGS_TO_STAGE}` drive vertical
+    ranking (edge source ranked *above* target). Key insight: `SUPPLIES_TO`'s source is the seller
+    (upstream), so a top→bottom layered layout places the supplier above its customer **with no
+    reversal**; `SERVES_MARKET` sinks end-markets to the bottom.
+  - `LATERAL_RELATIONSHIPS = {COMPETES_WITH, MIGRATES_TO}` are **excluded from ranking** so their
+    endpoints can share a row (competitors stay level). They render, but the layout runs only over
+    the flow-edge subgraph (all nodes + flow edges).
+  - `elkLayout()` → ELK `layered` opts (`elk.direction:DOWN`, orthogonal routing, generous
+    `nodeNode`/`nodeNodeBetweenLayers` spacing, `separateConnectedComponents` for side-by-side
+    clusters); `toElements()` tags each edge `flow:boolean`.
+- **`frontend/src/graph/style.ts`** (new) — nodes are **labeled rounded-boxes** colored by
+  `node_type` (the label *is* the node → text can't overlap text); added the previously-unstyled
+  `end_market` (purple) / `technology` (teal). Edges keep §7.5 fact-vs-inference styling; distinct
+  `COMPETES_WITH` (dotted, arrow-less) / `MIGRATES_TO` (dashed teal) looks; relationship labels
+  shown **only on hover/selection** to cut clutter.
+- **`frontend/src/components/GraphCanvas.tsx`** — registers ELK (`cytoscape.use(elk)`), lays out
+  over the flow-edge subset, **hover neighborhood-focus** (dims all but the hovered node's links),
+  + "Upstream ▲ / Downstream ▼" axis hints. The Task-8 edge→evidence + Confirm/Reject wiring is
+  **untouched**.
+- **`frontend/src/components/GraphLegend.tsx`** (new) — node-type/edge-style legend + Fit /
+  Re-layout controls, overlaid on the canvas.
+- **`frontend/src/types/cytoscape-elk.d.ts`** (new) — ambient types for the untyped extension.
+- **Deps + build** — added `elkjs` + `cytoscape-elk`; `vite.config.ts` splits the graph engine
+  into its own chunk (app JS stays ~50 kB gzip; graph chunk ~590 kB gzip) and suppresses elkjs's
+  benign `web-worker` unresolved-import warning (ELK uses its inlined **main-thread** worker —
+  `cytoscape-elk` calls `new ELK()` with no `workerUrl`, so the `web-worker` shim path is dead code).
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` | ✅ clean |
+| `npm run build` | ✅ clean, no warnings; app 154 kB / 50 kB gzip, graph engine isolated 1.9 MB / 588 kB gzip |
+| **ELK layout smoke** (Node, `elk.bundled.js`, no `web-worker`) | ✅ SK Hynix + Micron → NVIDIA → H100: suppliers **same row** (y=12), **above** NVIDIA (62), **above** H100 (112) — upstream-top / downstream-bottom / competitors-level confirmed |
+| **dev server** (`npm run dev`) | ✅ transforms `GraphCanvas.tsx` + serves the optimized `cytoscape-elk` dep with zero resolution errors |
+
+### Decisions & caveats
+
+- **ELK over dagre** (layer quality + orthogonal routing) and **over a React Flow / G6 rewrite**
+  (keeps the working Cytoscape evidence/review wiring).
+- **Live in-browser check pending** — needs the seeded backend running; load chain `hbm` and
+  confirm suppliers top / NVIDIA mid / GPUs+end-markets bottom, competitors level, no label
+  overlap, edge-click→evidence + Confirm/Reject intact.
+- **Graph chunk is ~590 kB gzip** (elkjs is large) and not lazy-loaded (the app *is* the graph);
+  acceptable for an internal tool. `React.lazy` code-split is a future option if needed.

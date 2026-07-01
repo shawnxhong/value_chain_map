@@ -1,74 +1,18 @@
 import cytoscape from "cytoscape";
-import type { Core, ElementDefinition, StylesheetStyle } from "cytoscape";
-import { useEffect, useRef } from "react";
+import type { Core } from "cytoscape";
+import elk from "cytoscape-elk";
+import { useCallback, useEffect, useRef } from "react";
 
+import { elkLayout, toElements } from "../graph/layout";
+import { STYLESHEET } from "../graph/style";
 import type { ChainGraph } from "../types";
+import GraphLegend from "./GraphLegend";
 
-// fact edges are solid + opaque; inference/thesis are dashed + faded so unverified
-// relationships read as obviously weaker (design §7.5).
-const STYLESHEET: StylesheetStyle[] = [
-  {
-    selector: "node",
-    style: {
-      label: "data(label)",
-      "font-size": 10,
-      "background-color": "#4472c4",
-      color: "#222",
-      "text-valign": "bottom",
-      "text-halign": "center",
-      width: 22,
-      height: 22,
-    },
-  },
-  {
-    selector: 'node[node_type="value_chain_stage"]',
-    style: { "background-color": "#c48a44", shape: "round-rectangle" },
-  },
-  {
-    selector: 'node[node_type="product"]',
-    style: { "background-color": "#6aa84f" },
-  },
-  {
-    selector: "edge",
-    style: {
-      label: "data(relationship_type)",
-      "font-size": 7,
-      color: "#666",
-      width: 2,
-      "curve-style": "bezier",
-      "target-arrow-shape": "triangle",
-      "line-color": "#9aa0a6",
-      "target-arrow-color": "#9aa0a6",
-    },
-  },
-  {
-    selector: 'edge[layer="fact"]',
-    style: { "line-color": "#1a7f37", "target-arrow-color": "#1a7f37" },
-  },
-  {
-    selector: 'edge[layer="inference"], edge[layer="thesis"]',
-    style: { "line-style": "dashed", opacity: 0.5 },
-  },
-  {
-    selector: "edge:selected",
-    style: { width: 4, "line-color": "#d6336c", "target-arrow-color": "#d6336c", opacity: 1 },
-  },
-];
-
-function toElements(graph: ChainGraph): ElementDefinition[] {
-  const nodes: ElementDefinition[] = graph.nodes.map((n) => ({
-    data: { id: n.id, label: n.canonical_name, node_type: n.node_type },
-  }));
-  const edges: ElementDefinition[] = graph.edges.map((e) => ({
-    data: {
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      relationship_type: e.relationship_type,
-      layer: e.layer,
-    },
-  }));
-  return [...nodes, ...edges];
+// Register the ELK layered layout once. Harmless if HMR re-evaluates this module.
+try {
+  cytoscape.use(elk);
+} catch {
+  /* already registered */
 }
 
 interface Props {
@@ -81,26 +25,56 @@ export default function GraphCanvas({ graph, selectedEdgeId, onEdgeSelect }: Pro
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
 
+  // Lay out over the flow-edge subgraph only (nodes + edges tagged `flow`), so lateral edges
+  // (COMPETES_WITH / MIGRATES_TO) render but don't push competitors onto different layers.
+  const runLayout = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.elements()
+      .filter((el) => el.isNode() || Boolean(el.data("flow")))
+      .layout(elkLayout())
+      .run();
+  }, []);
+
+  const fit = useCallback(() => cyRef.current?.fit(undefined, 30), []);
+
   useEffect(() => {
     if (!containerRef.current) return;
     const cy = cytoscape({
       container: containerRef.current,
       elements: toElements(graph),
       style: STYLESHEET,
-      layout: { name: "cose", animate: false, padding: 20 },
+      // no constructor layout: we run our subset layout below so lateral edges are excluded
+      layout: { name: "preset" },
     });
     cyRef.current = cy;
+    runLayout();
 
+    // selection -> evidence panel (unchanged wiring)
     cy.on("tap", "edge", (evt) => onEdgeSelect(evt.target.id()));
     cy.on("tap", (evt) => {
       if (evt.target === cy) onEdgeSelect(null); // click background clears selection
     });
 
+    // neighborhood focus: dim everything but the hovered node + its immediate links
+    cy.on("mouseover", "node", (evt) => {
+      const node = evt.target;
+      cy.elements().addClass("faded");
+      node.closedNeighborhood().removeClass("faded");
+      node.addClass("hl");
+    });
+    cy.on("mouseout", "node", () => {
+      cy.elements().removeClass("faded hl");
+    });
+    // edge hover reveals its relationship label
+    cy.on("mouseover", "edge", (evt) => evt.target.addClass("hover"));
+    cy.on("mouseout", "edge", (evt) => evt.target.removeClass("hover"));
+
     return () => {
       cy.destroy();
       cyRef.current = null;
     };
-  }, [graph, onEdgeSelect]);
+  }, [graph, onEdgeSelect, runLayout]);
 
   // reflect external selection onto the canvas
   useEffect(() => {
@@ -111,9 +85,41 @@ export default function GraphCanvas({ graph, selectedEdgeId, onEdgeSelect }: Pro
   }, [selectedEdgeId]);
 
   return (
+    <div style={{ position: "relative", flex: 1, minHeight: 560 }}>
+      <div
+        ref={containerRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          background: "#fcfcfb",
+        }}
+      />
+      <AxisHint edge="top" label="▲ Upstream" />
+      <AxisHint edge="bottom" label="▼ Downstream" />
+      <GraphLegend onFit={fit} onRelayout={runLayout} />
+    </div>
+  );
+}
+
+function AxisHint({ edge, label }: { edge: "top" | "bottom"; label: string }) {
+  const pos = edge === "top" ? { top: 10 } : { bottom: 10 };
+  return (
     <div
-      ref={containerRef}
-      style={{ flex: 1, minHeight: 560, border: "1px solid #ddd", borderRadius: 8 }}
-    />
+      style={{
+        position: "absolute",
+        left: 10,
+        ...pos,
+        zIndex: 10,
+        fontSize: 11,
+        fontWeight: 600,
+        color: "#9aa0a6",
+        letterSpacing: 0.3,
+        pointerEvents: "none",
+      }}
+    >
+      {label}
+    </div>
   );
 }

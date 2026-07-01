@@ -5,7 +5,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir uv
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+RUN pip install --proxy "${HTTPS_PROXY}" --no-cache-dir uv
 
 # Install dependencies first (better layer caching), then the package.
 COPY pyproject.toml README.md ./
